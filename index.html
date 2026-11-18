@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Lucky Grab | Jogo da garra</title>
+<meta name="description" content="Lucky Grab: a giant virtual claw machine. Move the claw, grab a balloon and win the prize. Free web version inspired by the big-screen event installation." />
+<meta name="theme-color" content="#15181d" />
+<style>
+  :root{ --wall:#9aa0a8; --wall-dark:#7c828b; --neon:#8bff5e; --pad:#2f6bff; }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:#15181d;font-family:"Arial Black",Arial,Helvetica,sans-serif}
+  #stage{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  #wrap{position:relative;width:min(100vw,calc(100vh*0.62));height:min(100vh,calc(100vw/0.62));max-height:100vh}
+  canvas{display:block;width:100%;height:100%;border-radius:6px}
+  #hud{position:absolute;left:0;right:0;bottom:14px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 18px;pointer-events:none}
+  .pad{pointer-events:auto;display:grid;grid-template-columns:repeat(3,54px);grid-template-rows:repeat(2,54px);gap:8px}
+  .pad button{pointer-events:auto;border:0;border-radius:14px;background:var(--pad);color:#fff;font-size:24px;font-weight:900;box-shadow:0 5px 0 #1c46b8,0 8px 14px #0006;cursor:pointer;touch-action:none;user-select:none}
+  .pad button:active{transform:translateY(3px);box-shadow:0 2px 0 #1c46b8}
+  .pad .l{grid-column:1;grid-row:1/3}.pad .r{grid-column:3;grid-row:1/3}
+  #grab{pointer-events:auto;width:104px;height:104px;border-radius:50%;border:0;background:radial-gradient(circle at 35% 30%,#b6ff8f,#58d31f 60%,#37a70d);color:#083b00;font-size:20px;font-weight:900;letter-spacing:.05em;box-shadow:0 7px 0 #2a8607,0 12px 20px #0007;cursor:pointer;touch-action:none;user-select:none}
+  #grab:active{transform:translateY(4px);box-shadow:0 3px 0 #2a8607}
+  #msg{position:absolute;top:16%;left:50%;transform:translateX(-50%);background:#000a;color:#fff;padding:12px 22px;border-radius:14px;font-size:clamp(16px,2.6vh,26px);text-align:center;opacity:0;transition:opacity .3s;pointer-events:none;width:90%;white-space:normal}
+  #msg.show{opacity:1}
+  #again{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);border:0;border-radius:16px;background:#fff;color:#111;font-size:22px;font-weight:900;padding:16px 34px;display:none;cursor:pointer;box-shadow:0 10px 30px #0009}
+  #again.show{display:block}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="msg"></div>
+    <button id="again">JOGAR DE NOVO</button>
+    <div id="hud">
+      <div class="pad">
+        <button class="l" id="left" aria-label="Mover para a esquerda">◀</button>
+        <button class="r" id="right" aria-label="Mover para a direita">▶</button>
+      </div>
+      <button id="grab">PEGAR</button>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  const wrap = document.getElementById('wrap');
+  const msg = document.getElementById('msg'), again = document.getElementById('again');
+  let W = 0, H = 0, DPR = Math.min(devicePixelRatio || 1, 2);
+  function size(){
+    const r = wrap.getBoundingClientRect();
+    W = r.width; H = r.height;
+    cv.width = W * DPR; cv.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  size(); addEventListener('resize', size);
+
+  const TANK = () => ({ x: W*0.05, y: H*0.16, w: W*0.90, h: H*0.60 });
+  const COLORS = ['#ff5db1','#8bff5e','#39c5ff','#ffe14d','#b06bff','#ff8b3d','#ffffff','#5dffcf','#ff4d4d','#4d7bff'];
+  let balls = [], claw, state, prize, confetti = [], move = 0, t0 = performance.now();
+
+  function reset(){
+    const t = TANK();
+    balls = [];
+    const R = Math.min(W, H) * 0.045;
+    let tries = 0;
+    while (balls.length < 34 && tries < 4000){
+      tries++;
+      const r = R * (0.8 + Math.random()*0.5);
+      const x = t.x + r + Math.random()*(t.w - 2*r);
+      const y = t.y + t.h*0.45 + Math.random()*(t.h*0.5 - r);
+      if (balls.every(b => Math.hypot(b.x-x, b.y-y) > (b.r+r)*0.86))
+        balls.push({x, y, r, c: COLORS[balls.length % COLORS.length], ph: Math.random()*6.28, got:false});
+    }
+    claw = { x: t.x + t.w/2, y: t.y + 10, open: 1, carrying: null };
+    state = 'aim'; prize = null; confetti = [];
+    again.classList.remove('show');
+  }
+
+  function say(txt, ms=1800){ msg.textContent = txt; msg.classList.add('show'); clearTimeout(say.t); say.t = setTimeout(()=>msg.classList.remove('show'), ms); }
+
+  // input
+  const press = (el, on, off) => {
+    const s = e => { e.preventDefault(); on(); };
+    const e2 = e => { e.preventDefault(); off && off(); };
+    el.addEventListener('pointerdown', s);
+    el.addEventListener('pointerup', e2);
+    el.addEventListener('pointercancel', e2);
+    el.addEventListener('pointerleave', e2);
+  };
+  press(document.getElementById('left'),  () => move = -1, () => { if (move < 0) move = 0; });
+  press(document.getElementById('right'), () => move =  1, () => { if (move > 0) move = 0; });
+  press(document.getElementById('grab'),  () => drop());
+  addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') move = -1;
+    if (e.key === 'ArrowRight') move = 1;
+    if (e.key === ' ' || e.key === 'ArrowDown') drop();
+  });
+  addEventListener('keyup', e => {
+    if ((e.key === 'ArrowLeft' && move < 0) || (e.key === 'ArrowRight' && move > 0)) move = 0;
+  });
+  again.addEventListener('click', reset);
+
+  function drop(){
+    if (state !== 'aim') return;
+    state = 'down';
+  }
+
+  function step(dt, now){
+    const t = TANK();
+    const railY = t.y + 10;
+    if (state === 'aim'){
+      claw.x += move * W * 0.55 * dt;
+      claw.x = Math.max(t.x + 20, Math.min(t.x + t.w - 20, claw.x));
+      claw.y = railY;
+    } else if (state === 'down'){
+      claw.y += H * 0.55 * dt;
+      const floor = t.y + t.h - 26;
+      let hit = null;
+      for (const b of balls){ if (!b.got && Math.hypot(b.x - claw.x, b.y - (claw.y + 40)) < b.r + 26){ hit = b; break; } }
+      if (hit || claw.y > floor){
+        claw.open = 0;
+        if (hit){ hit.got = true; claw.carrying = hit; }
+        state = 'up';
+      }
+    } else if (state === 'up'){
+      claw.y -= H * 0.45 * dt;
+      if (claw.carrying){ claw.carrying.x = claw.x; claw.carrying.y = claw.y + 52; }
+      if (claw.y <= railY){ claw.y = railY; state = claw.carrying ? 'carry' : 'miss'; }
+    } else if (state === 'carry'){
+      const chute = t.x + 34;
+      claw.x += (chute - claw.x) * Math.min(1, dt*4);
+      if (claw.carrying){ claw.carrying.x = claw.x; claw.carrying.y = claw.y + 52; }
+      if (Math.abs(claw.x - chute) < 4){
+        state = 'release'; claw.open = 1;
+      }
+    } else if (state === 'release'){
+      const b = claw.carrying; claw.carrying = null;
+      if (b){ b.vy = 0; state = 'prizefall'; prize = b; }
+    } else if (state === 'prizefall'){
+      prize.vy += 2200 * dt;
+      prize.y += prize.vy * dt;
+      prize.x -= W * 0.1 * dt;
+      if (prize.y > t.y + t.h - prize.r - 6){
+        win();
+      }
+    } else if (state === 'miss'){
+      say('Quase! Tente de novo');
+      state = 'aim';
+    }
+    // idle bobbing
+    for (const b of balls){ if (!b.got) b.bob = Math.sin(now/700 + b.ph) * 2.2; }
+    // confetti
+    for (const c of confetti){ c.x += c.vx*dt; c.y += c.vy*dt; c.vy += 900*dt; c.rot += c.spin*dt; }
+    confetti = confetti.filter(c => c.y < H + 30);
+  }
+
+  function win(){
+    state = 'won';
+    say('VOCÊ PEGOU! Boa jogada!', 4000);
+    for (let i = 0; i < 90; i++) confetti.push({
+      x: W/2 + (Math.random()-0.5)*W*0.4, y: H*0.2,
+      vx: (Math.random()-0.5)*500, vy: -Math.random()*700 - 100,
+      rot: Math.random()*6.28, spin: (Math.random()-0.5)*14,
+      c: COLORS[(Math.random()*COLORS.length)|0], s: 6 + Math.random()*8
+    });
+    setTimeout(() => again.classList.add('show'), 900);
+  }
+
+  function wall(){
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#a6acb4'); g.addColorStop(1, '#848a93');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#00000010'; ctx.lineWidth = 1;
+    for (let i = 0; i < 26; i++){
+      const x = ((i*137.53)%100)/100*W, y = ((i*73.17)%100)/100*H;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + (Math.sin(i*3.7))*45, y + (Math.sin(i*3.7))*45); ctx.stroke();
+    }
+  }
+
+  function ball(b){
+    const y = b.y + (b.bob || 0);
+    const g = ctx.createRadialGradient(b.x - b.r*0.35, y - b.r*0.4, b.r*0.15, b.x, y, b.r);
+    g.addColorStop(0, '#ffffffee'); g.addColorStop(0.25, b.c); g.addColorStop(1, shade(b.c));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, y, b.r, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = '#0002'; ctx.stroke();
+  }
+  function shade(hex){
+    const n = parseInt(hex.slice(1), 16);
+    const f = c => Math.max(0, c - 60);
+    return `rgb(${f(n>>16&255)},${f(n>>8&255)},${f(n&255)})`;
+  }
+
+  function drawClaw(){
+    const t = TANK();
+    const railY = t.y - 14;
+    // rail
+    ctx.fillStyle = '#3a3f47'; ctx.fillRect(t.x, railY, t.w, 8);
+    // cable
+    ctx.strokeStyle = '#22262c'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(claw.x, railY + 8); ctx.lineTo(claw.x, claw.y); ctx.stroke();
+    // spring body
+    ctx.fillStyle = '#8bff5e';
+    ctx.strokeStyle = '#2c6e12'; ctx.lineWidth = 2.5;
+    const bw = 26, bh = 34;
+    ctx.beginPath(); ctx.roundRect(claw.x - bw/2, claw.y, bw, bh, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#5ec722';
+    for (let i = 1; i < 4; i++) ctx.fillRect(claw.x - bw/2, claw.y + i*bh/4 - 1.5, bw, 3);
+    // legs
+    const spread = claw.open ? 30 : 12;
+    ctx.strokeStyle = '#c9ccd2'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+    for (const s of [-1, 1]){
+      ctx.beginPath();
+      ctx.moveTo(claw.x + s*8, claw.y + bh - 4);
+      ctx.quadraticCurveTo(claw.x + s*(8 + spread), claw.y + bh + 26, claw.x + s*(4 + spread*0.5), claw.y + bh + 44);
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+  }
+
+  function render(now){
+    wall();
+    const t = TANK();
+    // signage
+    ctx.fillStyle = '#00000014'; ctx.fillRect(0, H*0.02, W, H*0.1);
+    ctx.fillStyle = '#2b2f36';
+    ctx.font = `900 ${H*0.055}px "Arial Black", Arial`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillText('LUCKY GRAB', W/2 + 2, H*0.07 + 2);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#3c4250';
+    ctx.fillText('LUCKY GRAB', W/2, H*0.07);
+    ctx.restore();
+    // tank glass
+    ctx.fillStyle = '#e8f4ff30';
+    ctx.fillRect(t.x, t.y, t.w, t.h);
+    ctx.strokeStyle = '#ffffff88'; ctx.lineWidth = 3;
+    ctx.strokeRect(t.x, t.y, t.w, t.h);
+    // prize chute
+    ctx.fillStyle = '#22262cdd';
+    ctx.fillRect(t.x, t.y + t.h - 14, 68, 14);
+    ctx.fillStyle = '#8bff5e'; ctx.font = `900 ${H*0.016}px Arial`;
+    ctx.fillText('SAÍDA', t.x + 34, t.y + t.h - 26);
+    // balls
+    for (const b of balls) if (!b.got || b === prize || b === claw.carrying) ball(b);
+    drawClaw();
+    // glass glare
+    const gl = ctx.createLinearGradient(t.x, 0, t.x + t.w*0.5, 0);
+    gl.addColorStop(0, '#ffffff22'); gl.addColorStop(0.2, '#ffffff05'); gl.addColorStop(1, '#ffffff00');
+    ctx.fillStyle = gl; ctx.fillRect(t.x, t.y, t.w, t.h);
+    // caption
+    ctx.fillStyle = '#ffffffd9';
+    ctx.font = `700 ${H*0.017}px Arial`;
+    ctx.fillText('Mova a garra e escolha sua bolinha.', W/2, t.y + t.h + H*0.03);
+    ctx.fillText('Demonstração digital. Sem prêmios reais.', W/2, t.y + t.h + H*0.03 + H*0.024);
+    // confetti
+    for (const c of confetti){
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.rot);
+      ctx.fillStyle = c.c; ctx.fillRect(-c.s/2, -c.s/4, c.s, c.s/2);
+      ctx.restore();
+    }
+  }
+
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.05, (now - last)/1000); last = now;
+    step(dt, now);
+    render(now);
+    requestAnimationFrame(loop);
+  }
+  reset();
+  say('Mova a garra e toque em PEGAR!', 2400);
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
